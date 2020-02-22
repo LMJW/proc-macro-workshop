@@ -49,7 +49,14 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 self.#name = Some(#name);
                 self
             }
-            
+
+        }
+    });
+
+    let field_iter = fields.iter().map(|f|{
+        let name = &f.ident;
+        quote!{
+            #name:self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
         }
     });
 
@@ -71,32 +78,10 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
         impl #bident{
             #(#builder_impl)*
-            // pub fn executable(&mut self, executable: String) -> &mut Self{
-            //     self.executable = Some(executable);
-            //     self
-            // }
-
-            // pub fn args(&mut self, args: Vec<String>) -> &mut Self{
-            //     self.args = Some(args);
-            //     self
-            // }
-
-            // pub fn env(&mut self, env: Vec<String>) -> &mut Self{
-            //     self.env = Some(env);
-            //     self
-            // }
-
-            // pub fn current_dir(&mut self, current_dir: String) -> &mut Self{
-            //     self.current_dir = Some(current_dir);
-            //     self
-            // }
 
             pub fn build(&mut self)->Result<#name, Box<dyn std::error::Error>>{
                 Ok(#name{
-                    executable:self.executable.clone().ok_or("missing executable")?,
-                    args:self.args.clone().ok_or("missing args")?,
-                    env:self.env.clone().ok_or("missing env")?,
-                    current_dir:self.current_dir.clone().ok_or("missing current_dir")?,
+                    #(#field_iter,)*
                 })
             }
         }
