@@ -22,25 +22,36 @@ pub fn derive(input: TokenStream) -> TokenStream {
         unimplemented!()
     };
 
-    let builder_fields = fields.iter().map(|f|{
+    let builder_fields = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        quote!{
+        quote! {
             // this is how each field is mapped to the new option type field
             // eg: x: String => x:Option<String>
             #name : std::option::Option<#ty>
         }
     });
 
-    let builder_default = fields.iter().map(|f|{
+    let builder_default = fields.iter().map(|f| {
         let name = &f.ident;
-        quote!{
+        quote! {
             // this is how each field is mapped to the new option type field
             // eg: x: String => x:Option<String>
             #name : std::option::Option::None
-        }                
+        }
     });
 
+    let builder_impl = fields.iter().map(|f| {
+        let name = &f.ident;
+        let ty = &f.ty;
+        quote! {
+            pub fn #name(&mut self, #name:#ty) -> &mut Self{
+                self.#name = Some(#name);
+                self
+            }
+            
+        }
+    });
 
     let extend = quote! {
         pub struct #bident{
@@ -50,7 +61,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
 
         impl #name{
-            fn builder() -> #bident{                
+            fn builder() -> #bident{
                 #bident{
                     // the default builder fields will be None
                     #(#builder_default,)*
@@ -59,25 +70,26 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
 
         impl #bident{
-            pub fn executable(&mut self, executable: String) -> &mut Self{
-                self.executable = Some(executable);
-                self
-            }
+            #(#builder_impl)*
+            // pub fn executable(&mut self, executable: String) -> &mut Self{
+            //     self.executable = Some(executable);
+            //     self
+            // }
 
-            pub fn args(&mut self, args: Vec<String>) -> &mut Self{
-                self.args = Some(args);
-                self
-            }
+            // pub fn args(&mut self, args: Vec<String>) -> &mut Self{
+            //     self.args = Some(args);
+            //     self
+            // }
 
-            pub fn env(&mut self, env: Vec<String>) -> &mut Self{
-                self.env = Some(env);
-                self
-            }
+            // pub fn env(&mut self, env: Vec<String>) -> &mut Self{
+            //     self.env = Some(env);
+            //     self
+            // }
 
-            pub fn current_dir(&mut self, current_dir: String) -> &mut Self{
-                self.current_dir = Some(current_dir);
-                self
-            }
+            // pub fn current_dir(&mut self, current_dir: String) -> &mut Self{
+            //     self.current_dir = Some(current_dir);
+            //     self
+            // }
 
             pub fn build(&mut self)->Result<#name, Box<dyn std::error::Error>>{
                 Ok(#name{
