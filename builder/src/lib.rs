@@ -44,7 +44,7 @@ fn get_inner_ty(wrap_ty: String, t: &syn::Type) -> Option<&syn::Type> {
 
 
 
-fn field_is_vector(f: &syn::Field) -> Option<(syn::Ident, syn::Type)> {
+fn field_is_vector(f: &syn::Field) -> Result<Option<syn::Ident>, TokenStream> {
     // we will need to know two things for this. For example of "args" and
     // "arg", we need to know "arg" because the "arg" is method operate on
     // builder struct. We will also need to know the inner field of the vector,
@@ -55,7 +55,7 @@ fn field_is_vector(f: &syn::Field) -> Option<(syn::Ident, syn::Type)> {
     // consider the case where attrs vector equal to 1.
 
     if f.attrs.len() == 0 {
-        return None;
+        return Ok(None);
     }
 
     if f.attrs.len() != 1 {
@@ -90,7 +90,7 @@ fn field_is_vector(f: &syn::Field) -> Option<(syn::Ident, syn::Type)> {
                             // which is `String`
                             let inner_ty = get_inner_ty("Vec".to_string(), &ty).cloned().unwrap();
                             
-                            return Some((ident, inner_ty));
+                            return Ok(Some(ident));
                         }
                         TokenTree::Punct(p) => {
                             assert_eq!(p.as_char(), '=');
@@ -102,7 +102,7 @@ fn field_is_vector(f: &syn::Field) -> Option<(syn::Ident, syn::Type)> {
         }
         unimplemented!();
     };
-    None
+    Ok(None)
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -159,6 +159,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_impl = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
+        
         if let Some(inner_ty) = field_is_option(ty) {
             // what to return?
             // need to unwrap #ty to inner type if ty is an option
@@ -168,20 +169,33 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             }
-        } else if let Some(tup) = field_is_vector(&f) {
-            let (ident, ty) = tup;
-            // eprintln!("{:?}----{:?}",identx,identy);
-            quote! {
-                pub fn #ident(&mut self, #ident:#ty)->&mut Self{
-                    
-                    if let Some(v) = &mut self.#name{
-                        v.push(#ident); 
-                    }else{
-                        self.#name = Some(Vec::from(vec![#ident]));
+        } else if let Ok(tup) = field_is_vector(&f) {
+            // not like current case, field_is_vector returning a Result to be
+            // either Option, and tokenstream which represents an error. If the
+            // option is some, meaning the field is a vector. Otherwise it is
+            // not a vector.
+            if let Some(ident) = tup{
+                let inner_ty = get_inner_ty("Vec".to_string(), ty);
+                quote! {
+                    pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
+                        
+                        if let Some(v) = &mut self.#name{
+                            v.push(#ident); 
+                        }else{
+                            self.#name = Some(Vec::from(vec![#ident]));
+                        }
+                        self
                     }
-                    self
                 }
+            }else{
+                // some other cases like string and etc
+                quote!{pub fn #name(&mut self, #name:#ty)->&mut Self{
+                    self.#name = Some(#name);
+                    self
+                }}
             }
+            // eprintln!("{:?}----{:?}",identx,identy);
+
         } else {
             quote! {
                 pub fn #name(&mut self, #name:#ty) -> &mut Self{
@@ -199,10 +213,17 @@ pub fn derive(input: TokenStream) -> TokenStream {
             quote! {
                 #name:self.#name.clone()
             }
-        } else if  field_is_vector(&f).is_some(){
-            quote!{
-                #name:self.#name.clone().unwrap_or(vec![])
+        } else if let Ok(fs)=field_is_vector(&f){
+            if fs.is_some(){
+                quote!{
+                    #name:self.#name.clone().unwrap_or(vec![])
+                }
+            }else{
+                quote!{
+                    #name:self.#name.clone().unwrap()
+                }
             }
+
         }else {
             quote! {
                 #name:self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
