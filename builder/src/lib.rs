@@ -16,7 +16,7 @@ fn get_inner_ty(wrap_ty: String, t: &syn::Type) -> Option<&syn::Type> {
         ..
     }) = t
     {
-        if segments.len() == 1 && segments[0].ident == wrap_ty.as_str(){
+        if segments.len() == 1 && segments[0].ident == wrap_ty.as_str() {
             if let syn::PathSegment {
                 arguments:
                     syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
@@ -32,38 +32,28 @@ fn get_inner_ty(wrap_ty: String, t: &syn::Type) -> Option<&syn::Type> {
                     }
                 }
             }
-        }else{
-            if segments.len() != 1{
+        } else {
+            if segments.len() != 1 {
                 panic!("wrong numbers of segments length: {}", segments.len());
             }
-            
         }
     };
     None
 }
 
+#[allow(irrefutable_let_patterns)]
+fn field_is_vector(attrs: &Vec<syn::Attribute>) -> Result<syn::Ident, TokenStream> {
+    // the current api for this function is annoying, where the output will be either an
+    // Option in success case, and a tokenstream when error happens. However,
+    // for the success case, we will have Option None or Option Some. The Option
+    // Some is what we want, but for Option None, it is still the okay case. So
+    // the current function name is not really the meaning of it.
 
+    // for now, we only implemented the attrs length to be 1, not other cases
+    assert_eq!(attrs.len(), 1);
 
-fn field_is_vector(f: &syn::Field) -> Result<Option<syn::Ident>, TokenStream> {
-    // we will need to know two things for this. For example of "args" and
-    // "arg", we need to know "arg" because the "arg" is method operate on
-    // builder struct. We will also need to know the inner field of the vector,
-    // which is the type of argument of the "arg" method
-
-    // let's just handle the single case where there is only one macro
-    // #[builder(each = "arg")] on the struct fields args, so we will only
-    // consider the case where attrs vector equal to 1.
-
-    if f.attrs.len() == 0 {
-        return Ok(None);
-    }
-
-    if f.attrs.len() != 1 {
-        unimplemented!();
-    }
-    
-    let attr = f.attrs[0].clone();
-    let ty = f.ty.clone();
+    let attr = attrs[0].clone();
+    // let ty = f.ty.clone();
     if let syn::Attribute { ref tokens, .. } = attr {
         let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
 
@@ -78,19 +68,17 @@ fn field_is_vector(f: &syn::Field) -> Result<Option<syn::Ident>, TokenStream> {
                         }
                         TokenTree::Literal(lit) => {
                             // return a syn::Lit enum
-                            let name = match syn::Lit::new(lit.clone()){
-                                syn::Lit::Str(l)=> l,
-                                _ =>{panic!("expecting string literal")},
+                            let name = match syn::Lit::new(lit.clone()) {
+                                syn::Lit::Str(l) => l,
+                                _ => panic!("expecting string literal"),
                             };
                             let span = lit.span();
                             let ident = syn::Ident::new(name.value().as_str(), span);
                             // this creates the ident(eg: arg / env)
-                            
+
                             // now need to get the inner type of Vec<String>,
                             // which is `String`
-                            let inner_ty = get_inner_ty("Vec".to_string(), &ty).cloned().unwrap();
-                            
-                            return Ok(Some(ident));
+                            return Ok(ident);
                         }
                         TokenTree::Punct(p) => {
                             assert_eq!(p.as_char(), '=');
@@ -99,10 +87,11 @@ fn field_is_vector(f: &syn::Field) -> Result<Option<syn::Ident>, TokenStream> {
                     }
                 }
             }
+        } else {
+            unimplemented!("haven't consider this case yet");
         }
-        unimplemented!();
     };
-    Ok(None)
+    unreachable!("code should not be able to fall through here");
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -159,7 +148,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let builder_impl = fields.iter().map(|f| {
         let name = &f.ident;
         let ty = &f.ty;
-        
+
         if let Some(inner_ty) = field_is_option(ty) {
             // what to return?
             // need to unwrap #ty to inner type if ty is an option
@@ -169,33 +158,23 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             }
-        } else if let Ok(tup) = field_is_vector(&f) {
-            // not like current case, field_is_vector returning a Result to be
-            // either Option, and tokenstream which represents an error. If the
-            // option is some, meaning the field is a vector. Otherwise it is
-            // not a vector.
-            if let Some(ident) = tup{
+        } else if *(&f.attrs.len()) == 1usize {
+            if let Ok(ident) = field_is_vector(&f.attrs) {
                 let inner_ty = get_inner_ty("Vec".to_string(), ty);
                 quote! {
                     pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
-                        
+
                         if let Some(v) = &mut self.#name{
-                            v.push(#ident); 
+                            v.push(#ident);
                         }else{
                             self.#name = Some(Vec::from(vec![#ident]));
                         }
                         self
                     }
                 }
-            }else{
-                // some other cases like string and etc
-                quote!{pub fn #name(&mut self, #name:#ty)->&mut Self{
-                    self.#name = Some(#name);
-                    self
-                }}
+            } else {
+                unreachable!();
             }
-            // eprintln!("{:?}----{:?}",identx,identy);
-
         } else {
             quote! {
                 pub fn #name(&mut self, #name:#ty) -> &mut Self{
@@ -213,18 +192,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
             quote! {
                 #name:self.#name.clone()
             }
-        } else if let Ok(fs)=field_is_vector(&f){
-            if fs.is_some(){
-                quote!{
+        } else if &f.attrs.len() == &1usize {
+            if field_is_vector(&f.attrs).is_ok() {
+                quote! {
                     #name:self.#name.clone().unwrap_or(vec![])
                 }
-            }else{
-                quote!{
-                    #name:self.#name.clone().unwrap()
-                }
+            } else {
+                unreachable!();
             }
-
-        }else {
+        } else {
             quote! {
                 #name:self.#name.clone().ok_or(concat!(stringify!(#name), " is not set"))?
             }
