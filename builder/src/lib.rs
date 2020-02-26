@@ -41,8 +41,12 @@ fn get_inner_ty(wrap_ty: String, t: &syn::Type) -> Option<&syn::Type> {
     None
 }
 
+fn mk_err<T: quote::ToTokens>(t: T) -> proc_macro2::TokenStream {
+    syn::Error::new_spanned(t, "expected `builder(each = \"...\")`").to_compile_error()
+}
+
 #[allow(irrefutable_let_patterns)]
-fn field_is_vector(attrs: &Vec<syn::Attribute>) -> Result<syn::Ident, TokenStream> {
+fn field_is_vector(f: &syn::Field) -> Result<syn::Ident, proc_macro2::TokenStream> {
     // the current api for this function is annoying, where the output will be either an
     // Option in success case, and a tokenstream when error happens. However,
     // for the success case, we will have Option None or Option Some. The Option
@@ -50,48 +54,54 @@ fn field_is_vector(attrs: &Vec<syn::Attribute>) -> Result<syn::Ident, TokenStrea
     // the current function name is not really the meaning of it.
 
     // for now, we only implemented the attrs length to be 1, not other cases
+    let attrs = &f.attrs;
+    let name = f.ident.as_ref().unwrap();
     assert_eq!(attrs.len(), 1);
 
     let attr = attrs[0].clone();
-    // let ty = f.ty.clone();
-    if let syn::Attribute { ref tokens, .. } = attr {
-        let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    let meta = attr.parse_meta();
+    let m = match meta {
+        Ok(syn::Meta::List(mut metalist)) => {
+            if metalist.nested.len() != 1 {
+                return Err(mk_err(metalist));
+            }
 
-        if tts.len() == 1 {
-            if let TokenTree::Group(grp) = &tts[0] {
-                let stream = grp.stream();
-                for s in stream.into_iter() {
-                    match s {
-                        TokenTree::Ident(ident) => {
-                            // only defined for the 'each = "arg"' case
-                            assert_eq!(ident.to_string(), "each");
-                        }
-                        TokenTree::Literal(lit) => {
-                            // return a syn::Lit enum
-                            let name = match syn::Lit::new(lit.clone()) {
-                                syn::Lit::Str(l) => l,
-                                _ => panic!("expecting string literal"),
-                            };
-                            let span = lit.span();
-                            let ident = syn::Ident::new(name.value().as_str(), span);
-                            // this creates the ident(eg: arg / env)
-
-                            // now need to get the inner type of Vec<String>,
-                            // which is `String`
-                            return Ok(ident);
-                        }
-                        TokenTree::Punct(p) => {
-                            assert_eq!(p.as_char(), '=');
-                        }
-                        _ => { /* ignore other case */ }
+            match metalist.nested.pop().unwrap().into_value() {
+                syn::NestedMeta::Meta(syn::Meta::NameValue(nv)) => {
+                    let ident = nv.path.get_ident().unwrap();
+                    if ident.to_string() != "each".to_string() {
+                        return Err(mk_err(metalist));
                     }
+                    nv
+                }
+                meta => {
+                    // nvs.nested[0] was not k = v
+                    return Err(mk_err(meta));
                 }
             }
-        } else {
-            unimplemented!("haven't consider this case yet");
+        }
+        Ok(meta) => {
+            return Err(mk_err(meta));
+        }
+        Err(e) => {
+            return Err(e.to_compile_error());
         }
     };
-    unreachable!("code should not be able to fall through here");
+    eprintln!("{:#?}", m);
+    match m.lit {
+        syn::Lit::Str(s) => {
+            let arg = syn::Ident::new(&s.value(), s.span());
+            // let inner_ty = get_inner_ty("Vec".to_string(), &f.ty).unwrap();
+            // let method = quote! {
+            //     pub fn #arg(&mut self, #arg: #inner_ty) -> &mut Self {
+            //         self.#name.push(#arg);
+            //         self
+            //     }
+            // };
+            Ok(arg)
+        }
+        lit => panic!("expected string, found {:?}", lit),
+    }
 }
 
 #[proc_macro_derive(Builder, attributes(builder))]
@@ -159,21 +169,24 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
         } else if *(&f.attrs.len()) == 1usize {
-            if let Ok(ident) = field_is_vector(&f.attrs) {
-                let inner_ty = get_inner_ty("Vec".to_string(), ty);
-                quote! {
-                    pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
+            match field_is_vector(&f) {
+                Ok(ident) => {
+                    let inner_ty = get_inner_ty("Vec".to_string(), ty);
+                    quote! {
+                        pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
 
-                        if let Some(v) = &mut self.#name{
-                            v.push(#ident);
-                        }else{
-                            self.#name = Some(Vec::from(vec![#ident]));
+                            if let Some(v) = &mut self.#name{
+                                v.push(#ident);
+                            }else{
+                                self.#name = Some(Vec::from(vec![#ident]));
+                            }
+                            self
                         }
-                        self
                     }
                 }
-            } else {
-                unreachable!();
+                Err(e) => {
+                    e
+                }
             }
         } else {
             quote! {
@@ -193,12 +206,16 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #name:self.#name.clone()
             }
         } else if &f.attrs.len() == &1usize {
-            if field_is_vector(&f.attrs).is_ok() {
-                quote! {
-                    #name:self.#name.clone().unwrap_or(vec![])
+            match field_is_vector(&f) {
+                Ok(_) => {
+                    quote! {
+                        #name:self.#name.clone().unwrap_or(vec![])
+                    }
                 }
-            } else {
-                unreachable!();
+                Err(e) => {
+                    // panic!("=={:#?}", TokenStream::from(e));
+                    e
+                }
             }
         } else {
             quote! {
@@ -215,7 +232,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
         }
 
         impl #name{
-            fn builder() -> #bident{
+            pub fn builder() -> #bident{
                 #bident{
                     // the default builder fields will be None
                     #(#builder_default,)*
@@ -226,8 +243,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #bident{
             #(#builder_impl)*
 
-            pub fn build(&mut self)->Result<#name, Box<dyn std::error::Error>>{
-                Ok(#name{
+            pub fn build(&mut self)->std::result::Result<#name, std::boxed::Box<dyn std::error::Error>>{
+                std::result::Ok(#name{
                     #(#field_iter,)*
                 })
             }
