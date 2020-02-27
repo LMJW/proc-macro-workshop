@@ -46,7 +46,7 @@ fn mk_err<T: quote::ToTokens>(t: T) -> proc_macro2::TokenStream {
 }
 
 #[allow(irrefutable_let_patterns)]
-fn field_is_vector(f: &syn::Field) -> Result<syn::Ident, proc_macro2::TokenStream> {
+fn field_is_vector(f: &syn::Field) -> (syn::Ident, Option<proc_macro2::TokenStream>) {
     // the current api for this function is annoying, where the output will be either an
     // Option in success case, and a tokenstream when error happens. However,
     // for the success case, we will have Option None or Option Some. The Option
@@ -57,34 +57,37 @@ fn field_is_vector(f: &syn::Field) -> Result<syn::Ident, proc_macro2::TokenStrea
     let attrs = &f.attrs;
     let name = f.ident.as_ref().unwrap();
     assert_eq!(attrs.len(), 1);
+    let mut err_ret = None;
 
     let attr = attrs[0].clone();
     let meta = attr.parse_meta();
     let m = match meta {
         Ok(syn::Meta::List(mut metalist)) => {
             if metalist.nested.len() != 1 {
-                return Err(mk_err(metalist));
+                err_ret = Some(mk_err(metalist.clone()));
             }
-
             match metalist.nested.pop().unwrap().into_value() {
                 syn::NestedMeta::Meta(syn::Meta::NameValue(nv)) => {
                     let ident = nv.path.get_ident().unwrap();
                     if ident.to_string() != "each".to_string() {
-                        return Err(mk_err(metalist));
+                        err_ret = Some(mk_err(metalist));
                     }
                     nv
                 }
                 meta => {
                     // nvs.nested[0] was not k = v
-                    return Err(mk_err(meta));
+                    err_ret = Some(mk_err(meta));
+                    panic!()
                 }
             }
         }
         Ok(meta) => {
-            return Err(mk_err(meta));
+            err_ret = Some(mk_err(meta));
+            panic!()
         }
         Err(e) => {
-            return Err(e.to_compile_error());
+            err_ret = Some(e.to_compile_error());
+            panic!()
         }
     };
     eprintln!("{:#?}", m);
@@ -98,7 +101,7 @@ fn field_is_vector(f: &syn::Field) -> Result<syn::Ident, proc_macro2::TokenStrea
             //         self
             //     }
             // };
-            Ok(arg)
+            (arg, err_ret)
         }
         lit => panic!("expected string, found {:?}", lit),
     }
@@ -169,9 +172,25 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 }
             }
         } else if *(&f.attrs.len()) == 1usize {
-            match field_is_vector(&f) {
-                Ok(ident) => {
-                    let inner_ty = get_inner_ty("Vec".to_string(), ty);
+            let (ident, errs) = field_is_vector(&f);
+            let inner_ty = get_inner_ty("Vec".to_string(), ty);
+
+            match errs {
+                Some(e) => {
+                    quote! {
+                        pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
+
+                            if let Some(v) = &mut self.#name{
+                                v.push(#ident);
+                            }else{
+                                self.#name = Some(Vec::from(vec![#ident]));
+                            }
+                            self
+                        }
+                        #e
+                    }
+                }
+                None => {
                     quote! {
                         pub fn #ident(&mut self, #ident:#inner_ty)->&mut Self{
 
@@ -183,9 +202,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
                             self
                         }
                     }
-                }
-                Err(e) => {
-                    e
                 }
             }
         } else {
@@ -206,16 +222,8 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 #name:self.#name.clone()
             }
         } else if &f.attrs.len() == &1usize {
-            match field_is_vector(&f) {
-                Ok(_) => {
-                    quote! {
-                        #name:self.#name.clone().unwrap_or(vec![])
-                    }
-                }
-                Err(e) => {
-                    // panic!("=={:#?}", TokenStream::from(e));
-                    e
-                }
+            quote! {
+                #name:self.#name.clone().unwrap_or(vec![])
             }
         } else {
             quote! {
@@ -231,14 +239,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #(#builder_fields,)*
         }
 
-        impl #name{
-            pub fn builder() -> #bident{
-                #bident{
-                    // the default builder fields will be None
-                    #(#builder_default,)*
-                }
-            }
-        }
 
         impl #bident{
             #(#builder_impl)*
@@ -249,8 +249,18 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 })
             }
         }
+
+        impl #name{
+            pub fn builder() -> #bident{
+                #bident{
+                    // the default builder fields will be None
+                    #(#builder_default,)*
+                }
+            }
+        }
+
     };
 
-    // eprintln!("{:#?}", input);
+    // eprintln!("{:#?}", extend);
     TokenStream::from(extend)
 }
