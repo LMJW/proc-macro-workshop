@@ -2,7 +2,6 @@ extern crate proc_macro;
 extern crate proc_macro2;
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenTree;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
@@ -55,7 +54,7 @@ fn field_is_vector(f: &syn::Field) -> (syn::Ident, Option<proc_macro2::TokenStre
 
     // for now, we only implemented the attrs length to be 1, not other cases
     let attrs = &f.attrs;
-    let name = f.ident.as_ref().unwrap();
+    
     assert_eq!(attrs.len(), 1);
     let mut err_ret = None;
 
@@ -74,23 +73,23 @@ fn field_is_vector(f: &syn::Field) -> (syn::Ident, Option<proc_macro2::TokenStre
                     }
                     nv
                 }
-                meta => {
+                _ => {
                     // nvs.nested[0] was not k = v
-                    err_ret = Some(mk_err(meta));
+                    // err_ret = Some(mk_err(meta));
                     panic!()
                 }
             }
         }
-        Ok(meta) => {
-            err_ret = Some(mk_err(meta));
+        Ok(_) => {
+            // err_ret = Some(mk_err(meta));
             panic!()
         }
-        Err(e) => {
-            err_ret = Some(e.to_compile_error());
+        Err(_) => {
+            // err_ret = Some(e.to_compile_error());
             panic!()
         }
     };
-    eprintln!("{:#?}", m);
+    // eprintln!("{:#?}", m);
     match m.lit {
         syn::Lit::Str(s) => {
             let arg = syn::Ident::new(&s.value(), s.span());
@@ -244,7 +243,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
             #(#builder_impl)*
 
             pub fn build(&mut self)->std::result::Result<#name, std::boxed::Box<dyn std::error::Error>>{
-                std::result::Ok(#name{
+                std::result::Result::Ok(#name{
                     #(#field_iter,)*
                 })
             }
