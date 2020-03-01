@@ -8,26 +8,31 @@ use proc_macro::TokenStream;
 
 use quote::quote;
 use std::iter::FromIterator;
+
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Result, Token};
+use syn::{braced, parse_macro_input, Result, Token};
 
 #[proc_macro]
 pub fn seq(input: TokenStream) -> TokenStream {
-    // let _ = input;
     let input = parse_macro_input!(input as SeqMacroInput);
 
-    let _ident = input.ident;
-    let _intok = input.intok;
-    let _starti = input.starti;
-    let _dottok = input.dottok;
-    let _endi = input.endi;
-    let stmts = input.block.stmts;
+    let ident = input.ident;
+    let starti = input.starti;
+    let endi = input.endi;
+    let stream = input.stream;
+
+    let a = starti.base10_parse::<u64>().unwrap();
+    let b = endi.base10_parse::<u64>().unwrap();
+
+    let fns = (a..b)
+        .into_iter()
+        .map(|n| expand(ident.clone(), n, expr.clone()))
+        .collect();
 
     let ret = quote! {
-        #(#stmts)*
+        // #(#stmts)*
     };
 
-    // eprintln!("--{:#?}--",ret);
     ret.into()
     // proc_macro::TokenStream::new()
 }
@@ -36,51 +41,38 @@ pub fn seq(input: TokenStream) -> TokenStream {
 struct SeqMacroInput {
     /* ... */
     ident: syn::Ident,
-    intok: Token![in],
+    // intok: Token![in], // we know from context
     starti: syn::LitInt,
-    dottok: Token![..],
+    // dottok: Token![..],
     endi: syn::LitInt,
-    block: syn::Block,
-}
-
-impl Into<TokenStream> for SeqMacroInput {
-    fn into(self) -> TokenStream {
-        unimplemented!()
-    }
+    // block: syn::token::Brace,
+    stream: proc_macro2::TokenStream,
 }
 
 impl Parse for SeqMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let ident: syn::Ident = input.parse()?;
-        let intok: Token![in] = input.parse()?;
+        let _: Token![in] = input.parse()?;
         let starti: syn::LitInt = input.parse()?;
-        let dottok: Token![..] = input.parse()?;
+        let _: Token![..] = input.parse()?;
         let endi: syn::LitInt = input.parse()?;
 
-        let mut block: syn::Block = input.parse()?;
-        let content = block.stmts.clone();
-        // eprintln!("{:#?}", content);
+        let content;
+        let mut block = braced!(content in input);
+        let stream = content;
+        eprintln!("{:#?}", content);
 
         let a = starti.base10_parse::<u64>()?;
         let b = endi.base10_parse::<u64>()?;
 
-        let mut out = Vec::<syn::Stmt>::new();
-        for i in a..b {
-            let t: Vec<_> = content
-                .clone()
-                .into_iter()
-                .map(|stmt| expand(ident.clone(), i, stmt))
-                .collect();
-            out.extend(t);
-        }
-        block.stmts = out;
         let ret = SeqMacroInput {
             ident,
-            intok,
+            // intok,
             starti,
-            dottok,
+            // dottok,
             endi,
-            block,
+            // block,
+            stream,
         };
         // eprintln!("{:#?}==",ret);
 
@@ -89,35 +81,21 @@ impl Parse for SeqMacroInput {
 }
 
 // expand the stmt expression
-fn expand(ident: syn::Ident, n: u64, expr: syn::Stmt) -> syn::Stmt {
-    match expr {
-        syn::Stmt::Semi(expr, semi) => {
-            let nexp = match expr {
-                syn::Expr::Macro(exp) => {
-                    let mac = exp.mac;
-
-                    // expand the tokens field of syn::Macro
-                    let nts = mac
-                        .tokens
-                        .into_iter()
-                        .map(|tt: proc_macro2::TokenTree| -> proc_macro2::TokenTree {
-                            expand_token_stream(ident.clone(), n, tt)
-                        })
-                        .collect();
-                    let nmac = syn::Macro { tokens: nts, ..mac };
-
-                    let nexp = syn::ExprMacro { mac: nmac, ..exp };
-                    // nexp
-                    syn::Expr::Macro(nexp)
+fn expand(ident: syn::Ident, n: u64, expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let next_ident = false;
+    expr.into_iter()
+        .filter_map(|tt| match tt {
+            proc_macro2::TokenTree::Ident(ident) if next_ident => {}
+            proc_macro2::TokenTree::Punct(p) => {
+                if p.as_char() == '#'{
+                    
                 }
-                t => t,
-            };
-
-            // let ret = syn::Stmt::Semi(nexp, semi);
-            syn::Stmt::Semi(nexp, semi)
-        }
-        tt => tt,
-    }
+                
+                None
+            }
+            tt => Some(tt),
+        })
+        .collect()
 }
 
 // expand TokenStream
