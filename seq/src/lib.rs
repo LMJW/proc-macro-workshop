@@ -1,25 +1,38 @@
-extern crate proc_macro;
+// extern crate proc_macro;
 extern crate proc_macro2;
 
 extern crate quote;
 extern crate syn;
 
 use proc_macro::TokenStream;
-use proc_macro2;
-
-use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Result, Token};
 
 use quote::quote;
+use std::iter::FromIterator;
+use syn::parse::{Parse, ParseStream};
+use syn::{parse_macro_input, Result, Token};
 
 #[proc_macro]
 pub fn seq(input: TokenStream) -> TokenStream {
     // let _ = input;
-    let _input = parse_macro_input!(input as SeqMacroInput);
+    let input = parse_macro_input!(input as SeqMacroInput);
 
-    TokenStream::new()
+    let _ident = input.ident;
+    let _intok = input.intok;
+    let _starti = input.starti;
+    let _dottok = input.dottok;
+    let _endi = input.endi;
+    let stmts = input.block.stmts;
+
+    let ret = quote! {
+        #(#stmts)*
+    };
+
+    // eprintln!("--{:#?}--",ret);
+    ret.into()
+    // proc_macro::TokenStream::new()
 }
 
+#[derive(Debug)]
 struct SeqMacroInput {
     /* ... */
     ident: syn::Ident,
@@ -30,6 +43,12 @@ struct SeqMacroInput {
     block: syn::Block,
 }
 
+impl Into<TokenStream> for SeqMacroInput {
+    fn into(self) -> TokenStream {
+        unimplemented!()
+    }
+}
+
 impl Parse for SeqMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let ident: syn::Ident = input.parse()?;
@@ -38,75 +57,119 @@ impl Parse for SeqMacroInput {
         let dottok: Token![..] = input.parse()?;
         let endi: syn::LitInt = input.parse()?;
 
-        let block: syn::Block = input.parse()?;
+        let mut block: syn::Block = input.parse()?;
         let content = block.stmts.clone();
-        eprintln!("{:#?}", content);
+        // eprintln!("{:#?}", content);
 
-        let a = starti.base10_parse::<u16>()?;
-        let b = endi.base10_parse::<u16>()?;
+        let a = starti.base10_parse::<u64>()?;
+        let b = endi.base10_parse::<u64>()?;
 
-        let out = proc_macro2::TokenStream::new();
-        for i in a..b{
-            let out : Vec<_>= content.into_iter().map(|stmt|{expand(i, stmt)}).collect();
-
+        let mut out = Vec::<syn::Stmt>::new();
+        for i in a..b {
+            let t: Vec<_> = content
+                .clone()
+                .into_iter()
+                .map(|stmt| expand(ident.clone(), i, stmt))
+                .collect();
+            out.extend(t);
         }
-
-        Ok(SeqMacroInput {
+        block.stmts = out;
+        let ret = SeqMacroInput {
             ident,
             intok,
             starti,
             dottok,
             endi,
             block,
-        })
+        };
+        // eprintln!("{:#?}==",ret);
+
+        Ok(ret)
     }
 }
 
-fn expand(n:u16, expr:syn::Stmt)->proc_macro2::TokenStream{
+// expand the stmt expression
+fn expand(ident: syn::Ident, n: u64, expr: syn::Stmt) -> syn::Stmt {
     match expr {
-        syn::Stmt::Semi(expr, semi) =>{
-            let nexp = if let syn::Expr::Macro(exp) = expr{
-                let attr = exp.attrs;
-                let macro = exp.mac;
+        syn::Stmt::Semi(expr, semi) => {
+            let nexp = match expr {
+                syn::Expr::Macro(exp) => {
+                    let mac = exp.mac;
 
+                    // expand the tokens field of syn::Macro
+                    let nts = mac
+                        .tokens
+                        .into_iter()
+                        .map(|tt: proc_macro2::TokenTree| -> proc_macro2::TokenTree {
+                            expand_token_stream(ident.clone(), n, tt)
+                        })
+                        .collect();
+                    let nmac = syn::Macro { tokens: nts, ..mac };
 
-            }else{
-                unimplemented!();
-            }
+                    let nexp = syn::ExprMacro { mac: nmac, ..exp };
+                    // nexp
+                    syn::Expr::Macro(nexp)
+                }
+                t => t,
+            };
 
-            let ret = syn::Stmt::Semi(nexp, semi);
-            quote!{
-                #ret
-            }
+            // let ret = syn::Stmt::Semi(nexp, semi);
+            syn::Stmt::Semi(nexp, semi)
         }
-        tt=>quote!{#tt}
+        tt => tt,
     }
 }
 
-fn expand2(n:u16,tt:proc_macro2::TokenTree)->proc_macro2::TokenTree{
-    match tt{
-        proc_macro2::TokenTree::Group(g)=>{
-            let ns :Vec<_> = g.stream().into_iter().map(|it|{
-                match it{
-                    proc_macro2::TokenTree::Group(gg)=>{
-                        let tts: Vec<_> = gg.stream().into_iter().map(|item|{
-                            match item{
-                                proc_macro2::TokenTree::Ident(ident) =>{
-                                    let ns = format!("{}", n);
-                                    let ntk = proc_macro2::Ident::new(ns.as_str(), ident.span());
-                                    ntk
-                                }
-                                _ =>_
-                            }
-                        }).collect();
-                        proc_macro2::Group::new(gg.delimiter(),)
+// expand TokenStream
+fn expand_token_stream(
+    rident: proc_macro2::Ident,
+    n: u64,
+    tt: proc_macro2::TokenTree,
+) -> proc_macro2::TokenTree {
+    match tt {
+        proc_macro2::TokenTree::Group(g) => {
+            let ns: Vec<proc_macro2::TokenTree> = g
+                .stream()
+                .into_iter()
+                .map(|it| {
+                    // expand the nested tokenstream of
+                    match it {
+                        proc_macro2::TokenTree::Group(gg) => {
+                            //expand the target token stream
+                            let tts: Vec<proc_macro2::TokenTree> = gg
+                                .stream()
+                                .into_iter()
+                                .map(|item| match item {
+                                    proc_macro2::TokenTree::Ident(ident) => {
+                                        // change ident N to literal
+                                        let mut lit = proc_macro2::Literal::u64_unsuffixed(n);
+                                        lit.set_span(ident.span());
+                                        proc_macro2::TokenTree::Literal(lit)
+                                    }
+                                    xx => xx,
+                                })
+                                .collect();
+                            let ng = proc_macro2::Group::new(
+                                gg.delimiter(),
+                                proc_macro2::TokenStream::from_iter(tts),
+                            );
+                            proc_macro2::TokenTree::Group(ng)
+                        }
+                        it => it,
                     }
-                    xx=>xx
-                }
-            }).collect();
-            let mut ng = proc_macro2::TokenTree::new(g.delimiter(), ns);
-            proc_macro2::TokenTree::Group()
+                })
+                .collect();
+
+            let ns_iter = ns.into_iter();
+            let ns = proc_macro2::TokenStream::from_iter(ns_iter);
+            let ng = proc_macro2::Group::new(g.delimiter(), ns);
+            proc_macro2::TokenTree::Group(ng)
         }
-        t=>t
+        proc_macro2::TokenTree::Ident(ident) if ident.to_string() == rident.to_string() => {
+            let mut lit = proc_macro2::Literal::u64_unsuffixed(n);
+            lit.set_span(ident.span());
+            proc_macro2::TokenTree::Literal(lit)
+        }
+        t => t,
     }
 }
