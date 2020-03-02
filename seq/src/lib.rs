@@ -19,18 +19,18 @@ pub fn seq(input: TokenStream) -> TokenStream {
     let ident = input.ident;
     let starti = input.starti;
     let endi = input.endi;
-    let stream = input.stream;
+    let fnbody = input.fnbody;
 
     let a = starti.base10_parse::<u64>().unwrap();
     let b = endi.base10_parse::<u64>().unwrap();
 
-    let fns = (a..b)
+    let fns: Vec<_> = (a..b)
         .into_iter()
-        .map(|n| expand(ident.clone(), n, expr.clone()))
+        .map(|n| expand(&fnbody, n))
         .collect();
 
     let ret = quote! {
-        // #(#stmts)*
+        #(#fns)*
     };
 
     ret.into()
@@ -46,24 +46,62 @@ struct SeqMacroInput {
     // dottok: Token![..],
     endi: syn::LitInt,
     // block: syn::token::Brace,
-    stream: proc_macro2::TokenStream,
+    fnbody: FnContent,
+}
+
+#[derive(Debug)]
+struct FnContent {
+    fname: proc_macro2::Ident,
+    replace: proc_macro2::Ident,
+    ret: proc_macro2::Ident,
+    replace2: proc_macro2::Ident,
+    op: Token![*],
+    lit: syn::LitInt,
+}
+
+impl Parse for FnContent {
+    fn parse(content: ParseStream) -> Result<Self> {
+        let _: Token![fn] = content.parse()?; //fn
+        let fname: proc_macro2::Ident = content.parse()?; //f
+        let _: proc_macro2::Punct = content.parse()?; //#
+        let replace: proc_macro2::Ident = content.parse()?; //N
+        let _: proc_macro2::Group = content.parse()?; //()
+        let _: proc_macro2::Punct = content.parse()?; //-
+        let _: proc_macro2::Punct = content.parse()?; //>
+        let ret: proc_macro2::Ident = content.parse()?; //u64
+
+        let body;
+        let _: syn::token::Brace = braced!(body in content); //{}
+
+        // eprintln!("+++{:#?}", content);
+        let replace2: proc_macro2::Ident = body.parse()?; //N
+        let op: Token![*] = body.parse()?;
+        let lit: syn::LitInt = body.parse()?;
+
+        Ok(FnContent {
+            fname,
+            replace,
+            ret,
+            replace2,
+            op,
+            lit,
+        })
+    }
 }
 
 impl Parse for SeqMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
-        let ident: syn::Ident = input.parse()?;
+        let ident: syn::Ident = input.parse()?; //N
         let _: Token![in] = input.parse()?;
-        let starti: syn::LitInt = input.parse()?;
-        let _: Token![..] = input.parse()?;
-        let endi: syn::LitInt = input.parse()?;
+        let starti: syn::LitInt = input.parse()?; //1
+        let _: Token![..] = input.parse()?; //..
+        let endi: syn::LitInt = input.parse()?; //4
 
         let content;
-        let mut block = braced!(content in input);
-        let stream = content;
-        eprintln!("{:#?}", content);
+        let mut block: syn::token::Brace = braced!(content in input);
 
-        let a = starti.base10_parse::<u64>()?;
-        let b = endi.base10_parse::<u64>()?;
+        let res = content.call(FnContent::parse).unwrap();
+        eprintln!("---{:#?}", res);
 
         let ret = SeqMacroInput {
             ident,
@@ -72,30 +110,29 @@ impl Parse for SeqMacroInput {
             // dottok,
             endi,
             // block,
-            stream,
+            fnbody: res,
         };
-        // eprintln!("{:#?}==",ret);
-
         Ok(ret)
     }
 }
 
 // expand the stmt expression
-fn expand(ident: syn::Ident, n: u64, expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
-    let next_ident = false;
-    expr.into_iter()
-        .filter_map(|tt| match tt {
-            proc_macro2::TokenTree::Ident(ident) if next_ident => {}
-            proc_macro2::TokenTree::Punct(p) => {
-                if p.as_char() == '#'{
-                    
-                }
-                
-                None
-            }
-            tt => Some(tt),
-        })
-        .collect()
+fn expand(input: &FnContent, n: u64) -> proc_macro2::TokenStream {
+    let fname = input.fname.to_string();
+    let nfname = format!("{}{}",fname, n);
+    let ret = input.ret.clone();
+    let op = input.op.clone();
+    let lit = input.lit.clone();
+
+    let nfname = proc_macro2::Ident::new(nfname.as_str(), input.fname.span());
+    let nlit = proc_macro2::Literal::u64_unsuffixed(n);
+    
+    let ret = quote!{
+        fn #nfname() -> #ret{
+            #nlit #op #lit
+        }
+    };
+    ret
 }
 
 // expand TokenStream
